@@ -40,6 +40,7 @@ declare -r need_sudo_to_ignite_user=false   # надо ли выполнять s
 declare -r systemd_ignite_service="ignite-server.service" # название юнита systemd для ignite
 declare -r path_to_ignite_pid="/opt/ignite/logs/ignite-server.pid" # полный путь к pid-файлу для ignite на серверах
 
+
 ###############################################################################
 
 args=$#         # Количество переданных аргументов скрипту
