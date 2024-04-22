@@ -23,16 +23,15 @@ server_list=$1  # Переданный файл со списокм адресо
 
 print_line () {
     line=""
-    for (( i=0; i<$2; i++)); do {
+    for (( i=0; i<$2; i++)); do
         line=${line}$1
-    }
     done
-    echo ${line}
+    echo "${line}"
 }
 
 # ------------------------------------------------------
 
-if [ ${args} -ne 1 ]; then {
+if [ ${args} -ne 1 ]; then 
     echo ""
     print_line '!' 75 
     echo "!  ВНИМАНИЕ!  В  качестве параметра скрипту необходимо  передать файл с   !"
@@ -43,21 +42,20 @@ if [ ${args} -ne 1 ]; then {
     print_line '!' 75 
     echo ""
     exit 1
-}
 fi
 
 # ------------------------------------------------------
 
-for server in $(cat ${server_list}); do {
+for server in $(cat "${server_list}"); do 
     # Проверка доступности по порту 22 (ssh)
-    nc -z ${server} 22
-    if [ $? -ne 0 ]; then {
+    if ! nc -z "${server}" 22; then 
         echo -e "\n> Узел  ${server} недоступен!  (!!!)"
         print_line '=' 80
         continue
-    }
     fi
-    
+    echo "${server}"
+    continue
+
     echo -e "\n> Узел:  ${server}"
     # Порт 22 уже проверен, а остальные проверяем только если запущен ignite
     ignite_runned=$( ssh -q ${server} "ps aux | grep [i]gnite.sh | wc -l"  ) 
@@ -160,5 +158,4 @@ for server in $(cat ${server_list}); do {
      fi
 
      print_line '=' 80
-};
 done
