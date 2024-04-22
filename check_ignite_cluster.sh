@@ -14,7 +14,7 @@
 #  6. Версия ОС Linux и ядра
 #  7. Пользователь techstack (uid, gid, группы, sudo, chage)
 #  8. Пользователь ignite (uid, gid, группы, sudo, chage)
-#  9. Проверка на корректность юнита ignite-server
+#  9. Проверка на корректность юнита systemd для ignite
 #
 ###############################################################################
 
@@ -37,8 +37,8 @@ declare -r ignite_user="ignite"  # пользователь (владелец) i
 declare -r need_sudo_to_ignite_user=false   # надо ли выполнять sudo под владельца ignite
                                             # если false - проверяется под текущим пользователем
 
-declare -r systemd_ignite_service="ignite-server.service"
-declare -r path_to_ignite_pid="/opt/ignite/logs/ignite-server.pid"
+declare -r systemd_ignite_service="ignite-server.service" # название юнита systemd для ignite
+declare -r path_to_ignite_pid="/opt/ignite/logs/ignite-server.pid" # полный путь к pid-файлу для ignite на серверах
 
 ###############################################################################
 
