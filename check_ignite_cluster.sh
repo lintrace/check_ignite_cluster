@@ -96,8 +96,8 @@ for server in $(cat "${server_list}"); do
         # Определяем версию Ignite для стандартных путей
         ignite_version=$(ssh ${ssh_conn_str} "${sudo_str} find /opt/ignite/server/libs/ -type f -name ignite-core*.jar 2>/dev/null | grep -Po '[0-9.]+'")
         echo -ne "\n# Обнаружен запущенный Ignite версии ${ignite_version}\n# Проверка портов: 22-OK"
-        for port in ${ports_to_check[@]}; do
-            if nc -z ${server} ${port} ; then
+        for port in "${ports_to_check[@]}"; do
+            if nc -z ${server} "${port}" ; then
                 echo -n ", ${port}-OK"
             else
                 echo -n ", ${port}-FAILED(!)"
