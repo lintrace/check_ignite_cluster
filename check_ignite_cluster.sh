@@ -97,7 +97,7 @@ for server in $(cat "${server_list}"); do
         run_ignite_libs_path="$(echo "${run_ignite_ps}" | rev | grep -Po "\*/sbil/[^(\s|:)]+" | rev | cut -d* -f1)"
         run_ignite_version=$(ssh ${ssh_conn_str} "${sudo_str} ls ${run_ignite_libs_path}ignite-core-* | grep -Po '[\d]+\.[\d]+\.[\d]+'")
         run_ignite_user="$(echo ${run_ignite_ps} | awk '{print $1}')"
-        echo -ne "\n# Запущен Ignite версии ${run_ignite_version} под пользователем ${run_ignite_user}\n# Проверка портов: 22-OK" # TODO под пользователем...
+        echo -ne "\n# Запущен Ignite версии ${run_ignite_version} под пользователем ${run_ignite_user}\n# Проверка портов: 22-OK"
         for port in "${ports_to_check[@]}"; do
             if nc -z ${server} "${port}" ; then
                 echo -n ", ${port}-OK"
