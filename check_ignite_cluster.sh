@@ -89,13 +89,15 @@ for server in $(cat "${server_list}"); do
     ssh_conn_str=" -q ${server} -p ${ssh_port}"
 
     # Порт 22 уже проверен, а остальные проверяем только если запущен ignite
-    declare -i ignite_runned="$( ssh ${ssh_conn_str} "ps aux | grep [i]gnite.sh | wc -l")"
-    if [ ${ignite_runned} -eq "0" ]; then
+    run_ignite_ps="$( ssh ${ssh_conn_str} "ps aux | grep '[i]gnite.sh.*/libs/\*'")"
+    if [ -z "${run_ignite_ps}" ]; then
         echo -ne "\n# Проверка портов: 22-OK. Порты Ignite не проверялись, так как процесс не запущен!"
     else
-        # Определяем версию Ignite для стандартных путей
-        ignite_version=$(ssh ${ssh_conn_str} "${sudo_str} find /opt/ignite/server/libs/ -type f -name ignite-core*.jar 2>/dev/null | grep -Po '[0-9.]+'")
-        echo -ne "\n# Обнаружен запущенный Ignite версии ${ignite_version}\n# Проверка портов: 22-OK"
+        # Определяем версию Ignite
+        run_ignite_libs_path="$(echo "${run_ignite_ps}" | rev | grep -Po "\*/sbil/[^(\s|:)]+" | rev | cut -d* -f1)"
+        run_ignite_version=$(ssh ${ssh_conn_str} "${sudo_str} ls ${run_ignite_libs_path}ignite-core-* | grep -Po '[\d]+\.[\d]+\.[\d]+'")
+        run_ignite_user="$(echo ${run_ignite_ps} | awk '{print $1}')"
+        echo -ne "\n# Запущен Ignite версии ${run_ignite_version} под пользователем ${run_ignite_user}\n# Проверка портов: 22-OK" # TODO под пользователем...
         for port in "${ports_to_check[@]}"; do
             if nc -z ${server} "${port}" ; then
                 echo -n ", ${port}-OK"
