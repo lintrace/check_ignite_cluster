@@ -12,13 +12,12 @@
 #  4. Информация о точках монтирования /opt/*
 #  5. Версия java
 #  6. Версия ОС Linux и ядра
-#  7. Пользователь techstack (uid, gid, группы, sudo, chage)
-#  8. Пользователь ignite (uid, gid, группы, sudo, chage)
+#  7. Пользователь ${maintenance_user} (uid, gid, группы, sudo, chage)
+#  8. Пользователь ${ignite_user} (uid, gid, группы, sudo, chage)
 #  9. Проверка на корректность юнита systemd для ignite
 #
 ###############################################################################
 
-# Variables
 # ports to check
 declare -ri ssh_port=22   # remote hosts SSH port
 
@@ -27,15 +26,21 @@ declare -ra ports_to_check=(
     10800   # thin client port
     47100   # local communication port
     47500   # local discovery port
-    49128   # java JMX port
-    49129   # java RMI port
+    1098    # java JMX port
+    1099    # java RMI port
     8080    # REST (Web API)
     8443    # Secure REST (https Web API)
 )
 
-declare -r ignite_user="ignite"  # пользователь (владелец) ignite на сервере
-declare -r need_sudo_to_ignite_user=false   # надо ли выполнять sudo под владельца ignite
-                                            # если false - проверяется под текущим пользователем
+declare -r maintenance_user="alex"     # УЗ с возможностью подключения по SSH к серверам
+declare -r ignite_user="ignite"             # пользователь (владелец) процесса ignite на сервере
+declare -r need_sudo_to_ignite_user=true    # надо ли выполнять sudo под владельца ignite
+                                            # если false - используется пользователь maintenance_user
+
+declare -r fs_mount_points_for_ignite="/opt/"   # Где искать точки монтирования каталогов под нужды ignite
+                                                # Если точек монтировария нет, или проверка не тебуется, оставьте строку пустой ""
+
+declare -r fs_mount_points_not_ignite_user_depth=1 # Глубина поиска в точках монтирования файлов не принадлежащих пользователю [ignit_user]
 
 declare -r systemd_ignite_service="ignite-server.service" # название юнита systemd для ignite
 declare -r path_to_ignite_pid="/opt/ignite/logs/ignite-server.pid" # полный путь к pid-файлу для ignite на серверах
@@ -47,8 +52,8 @@ args=$#         # Количество переданных аргументов
 server_list=$1  # Переданный файл со списокм адресов для проверки
 
 print_line () {
-    line=""
-    for (( i=0; i<$2; i++)); do
+    local line=""
+    for (( i=0; i<$2; i++ )); do
         line=${line}$1
     done
     echo "${line}"
@@ -79,24 +84,35 @@ fi
 
 for server in $(cat "${server_list}"); do 
     # Проверка доступности по порту SSH
-    if ! nc -z "${server}" ${ssh_port}; then
-        echo -e "\n> Узел  ${server} недоступен!  (!!!)"
+    if ! nc -z ${server} ${ssh_port}; then
+        echo -en "\n> Узел ${server} недоступен по порту ${ssh_port} (ssh)"
+        if ping -c 1 ${server} 1>/dev/null; then
+            echo ", при этом сам узел обнаруживается в сети! Проверьте, запущена ли служба sshd?"
+        else
+            echo " и не отвечает на ping (!)"
+        fi
         print_line '=' 80
         continue
     fi
 
     echo -e "\n> Узел:  ${server}"
-    ssh_conn_str=" -q ${server} -p ${ssh_port}"
+    ssh_conn_str=" -q ${server} -p ${ssh_port} -l ${maintenance_user}"
+    
+    ps_cmd_out="$( ssh ${ssh_conn_str} "ps aux | grep '[i]gnite.sh.*/libs/\*'")"
+    if [ $? -eq 255 ]; then
+        echo "Не удалось подключиться через ssh по порту ${ssh_port}! Проверьте логин [maintenance_user] и ключи ssh!"
+        print_line '=' 80
+        continue
+    fi
 
     # Порт 22 уже проверен, а остальные проверяем только если запущен ignite
-    run_ignite_ps="$( ssh ${ssh_conn_str} "ps aux | grep '[i]gnite.sh.*/libs/\*'")"
-    if [ -z "${run_ignite_ps}" ]; then
+    if [ -z "${ps_cmd_out}" ]; then
         echo -ne "\n# Проверка портов: 22-OK. Порты Ignite не проверялись, так как процесс не запущен!"
     else
         # Определяем версию Ignite
-        run_ignite_libs_path="$(echo "${run_ignite_ps}" | rev | grep -Po "\*/sbil/[^(\s|:)]+" | rev | cut -d* -f1)"
-        run_ignite_version=$(ssh ${ssh_conn_str} "${sudo_str} ls ${run_ignite_libs_path}ignite-core-* | grep -Po '[\d]+\.[\d]+\.[\d]+'")
-        run_ignite_user="$(echo ${run_ignite_ps} | awk '{print $1}')"
+        run_ignite_libs_path="$(echo "${ps_cmd_out}" | rev | grep -Po "\*/sbil/[^(\s|:)]+" | rev | cut -d* -f1)"
+        run_ignite_version=$(ssh ${ssh_conn_str} "${sudo_str} find ${run_ignite_libs_path} -type f -name ignite-core-*jar 2>/dev/null" | grep -Po '[\d]+\.[\d]+\.[\d]+')
+        run_ignite_user="$(echo ${ps_cmd_out} | awk '{print $1}')"
         echo -ne "\n# Запущен Ignite версии ${run_ignite_version} под пользователем ${run_ignite_user}\n# Проверка портов: 22-OK"
         for port in "${ports_to_check[@]}"; do
             if nc -z ${server} "${port}" ; then
@@ -109,74 +125,99 @@ for server in $(cat "${server_list}"); do
      echo ""
 
      # Проверка ОЗУ и файла подкачки
-     ram_total=$(ssh ${ssh_conn_str} "free -h | grep Mem | awk '{print \$2}'")
-     swap_total=$(ssh ${ssh_conn_str} "free -h | grep Swap | awk '{print \$2}'")
+     free_cmd_out="$(ssh ${ssh_conn_str} "free -h")" 
+     ram_total="$(echo "${free_cmd_out}" | grep Mem | awk '{print $2}')"
+     swap_total="$(echo "${free_cmd_out}" | grep Swap | awk '{print $2}')"
      echo -e "\n# Память (total) - ОЗУ: ${ram_total}, \tSwap: ${swap_total}"
 
      # Информация о процессоре
-     cpu_core=$(ssh ${ssh_conn_str} "lscpu | egrep '^CPU\\(' | awk '{print \$2}' ")
-     cpu_model=$(ssh ${ssh_conn_str} "lscpu | grep '^Model name' | awk '{\$1=\$2=\"\"; print \$0}' ")
-     cpu_hyper=$(ssh ${ssh_conn_str} "lscpu | grep '^Hypervisor' | awk '{print \$3}' ")
-     cpu_virt=$(ssh ${ssh_conn_str} "lscpu | grep '^Virtualization' | awk '{print \$3}' ")
+     lscpu_cmd_out="$(ssh ${ssh_conn_str} "lscpu")"
+     cpu_core="$( echo "${lscpu_cmd_out}" | grep -E "^CPU\\(" | cut -d: -f2 | xargs )"
+     cpu_model="$( echo "${lscpu_cmd_out}" | grep "^Model name" | cut -d: -f2 | xargs )"
+     cpu_hyper="$( echo "${lscpu_cmd_out}" | grep "^Hypervisor" | cut -d: -f2 | xargs )"
+     cpu_virt="$( echo "${lscpu_cmd_out}" | grep "^Virtualization" | cut -d: -f2 | xargs )"
 
-     echo -e "\n# Ядер - ${cpu_core}, процессор: ${cpu_model}, виртуализация ${cpu_hyper}, ${cpu_virt}"
+     # TODO Детектировать baremetal
+     echo -en "\n# Ядра: ${cpu_core}, процессор: ${cpu_model}"
+     if [ -n "${cpu_hyper}" ]; then
+         echo " [виртуальная машина, гипервизор: ${cpu_hyper}, виртуализация: ${cpu_virt}]"
+     else
+         echo " [BAREMETAL, поддерживаемая виртуализация: ${cpu_virt}]"
+     fi
 
      # Проверка точек монтирования и владельцев
-     echo -e "\n\n# Точки монтирования /opt/*"
-     ssh ${ssh_conn_str} "lsblk -o MOUNTPOINT,SIZE | grep '/opt/' | sort -u"
-
-     for mount_path in $(ssh ${ssh_conn_str} "lsblk -o MOUNTPOINT | grep '/opt/' | sort -u"); do
-         root_files=$(ssh ${ssh_conn_str} "ls -l ${mount_path} | grep root")
-         if [ -n "${root_files}" ]; then
-             echo -e "\nВ точке монтирования ${mount_path} обнаружены файлы с владельцем  root!"
-             echo ${root_files}
+     if [ -n "${fs_mount_points_for_ignite}" ]; then
+         lsblk_cmd_out="$(ssh ${ssh_conn_str} "lsblk -o MOUNTPOINT,SIZE" | grep "${fs_mount_points_for_ignite}" | sort -u)"
+         echo -en "\n# Точки монтирования в ${fs_mount_points_for_ignite}*"
+         if [ -z "${lsblk_cmd_out}" ]; then 
+             echo " отсутствуют!"
+         else
+             echo -e "\n${lsblk_cmd_out}"
+             for mount_path in $(echo "${lsblk_cmd_out}" | awk '{print $1}'); do
+                 not_ignite_user_files=$(ssh ${ssh_conn_str} "find ${mount_path}  -maxdepth ${fs_mount_points_not_ignite_user_depth} \! -user ${ignite_user} 2>/dev/null")
+                 if [ -n "${not_ignite_user_files}" ]; then
+                     echo -e "\nВ точке монтирования ${mount_path} обнаружены файлы с владельцем, отличным от ${ignite_user}!"
+                     echo ${not_ignite_user_files}
+                 fi
+             done
          fi
-     done
+     fi
 
      # Проверка версии java
      java_version=$(ssh ${ssh_conn_str} "java --version | head -n1")
-     echo -e "\n\n# Используемая java: ${java_version}"
+     echo -e "\n# Используемая java: ${java_version}"
 
      # Проверка версии OS Linux
-     pretty_name_os=$(ssh ${ssh_conn_str} 'grep PRETTY_NAME /etc/os-release | cut -d\" -f2')
-     kernel=$(ssh ${ssh_conn_str} "uname -r")
+     pretty_name_os="$(ssh ${ssh_conn_str} "grep PRETTY_NAME /etc/os-release" | cut -d\" -f2)"
+     kernel="$(ssh ${ssh_conn_str} "uname -r")"
      echo -e "\n# Операционная система: ${pretty_name_os}, ядро: ${kernel}"
 
-     # Проверка пользователя techstack
-     techstack_uid=$(ssh ${ssh_conn_str} "grep techstack /etc/passwd | cut -d: -f3")
-     techstack_gid=$(ssh ${ssh_conn_str} "grep techstack /etc/passwd | cut -d: -f4")
-     techstack_groups=$(ssh ${ssh_conn_str} "groups techstack | cut -d: -f2")
-     if [ $(ssh ${ssh_conn_str} "chage -l techstack | grep never | wc -l") -eq 3 ]; then
-        techstack_chage="OK"
-     else
-        techstack_chage="Необходимо сменить пароль!"
-     fi 
-     if [ $(ssh ${ssh_conn_str} "sudo -l | grep '\(ignite\) NOPASSWD: ALL' | wc -l") -eq 1 ]; then
-        techstack_sudo="OK"
-     else
-        techstack_sudo="FAIL!"
+     # Проверка пользователя [maintenance_user]
+     maintenance_passwd_out="$(ssh ${ssh_conn_str} "grep ${maintenance_user} /etc/passwd")"
+     if [ -n "${maintenance_passwd_out}" ]; then
+         maintenance_user_uid="$(echo ${maintenance_passwd_out} | cut -d: -f3)"
+         maintenance_user_gid="$(echo ${maintenance_passwd_out} | cut -d: -f4)"
+         maintenance_user_groups="$(ssh ${ssh_conn_str} "groups ${maintenance_user}" | cut -d: -f2)"
+         if [ $(ssh ${ssh_conn_str} "chage -l ${maintenance_user}" | grep -c "never") -eq 3 ]; then
+             maintenance_user_chage="OK"
+         else
+             maintenance_user_chage="Необходимо сменить пароль!"
+         fi 
+         if [ $(ssh ${ssh_conn_str} "sudo -l" | grep -c "\(${ignite_user}\).*NOPASSWD.*ALL") -eq 1 ]; then
+             maintenance_user_sudo="OK"
+         else
+             maintenance_user_sudo="FAIL!"
+         fi
+         echo -e  "\n# Пользователь ${maintenance_user}: chage - ${maintenance_user_chage}, sudo - ${maintenance_user_sudo}, UID=${maintenance_user_uid}, GID=${maintenance_user_gid}, входит в группы:${maintenance_user_groups}"
      fi
-     echo -e  "\n# Пользователь techstack: chage - ${techstack_chage}, sudo - ${techstack_sudo}, UID=${techstack_uid}, GID=${techstack_gid}, входит в группы:${techstack_groups}"
 
-     # Проверка пользователя ignite
-     ignite_uid=$(ssh ${ssh_conn_str} "grep ignite /etc/passwd | cut -d: -f3")
-     ignite_gid=$(ssh ${ssh_conn_str} "grep ignite /etc/passwd | cut -d: -f4")
-     ignite_groups=$(ssh ${ssh_conn_str} "groups ignite | cut -d: -f2")
-     if [ $(ssh ${ssh_conn_str} "${sudo_str} chage -l ignite | grep never | wc -l") -eq 3 ]; then
-        ignite_chage="OK"
-     else
-        ignite_chage="Необходимо сменить пароль!"
-     fi 
-     if [ $(ssh ${ssh_conn_str} "${sudo_str} sudo -l | grep '\(ALL\)' | wc -l") -ge 30 ]; then
-        ignite_sudo="OK"
-     else
-        ignite_sudo="FAIL! Необходимо проверить на соответствие новому чек-листу"
-     fi
-     echo -e  "\n# Пользователь ignite: chage - ${ignite_chage}, sudo - ${ignite_sudo}, UID=${ignite_uid}, GID=${ignite_gid}, входит в группы:${ignite_groups}"
+     # Проверка пользователя [ignite_user]
+     ignite_passwd_out="$(ssh ${ssh_conn_str} "grep ${ignite_user} /etc/passwd")"
+     if [ -n "${ignite_passwd_out}" ]; then 
+         ignite_user_uid="$(echo ${ignite_passwd_out} | cut -d: -f3)"
+         ignite_user_gid="$(echo ${ignite_passwd_out} | cut -d: -f4)"
+         ignite_user_groups="$(ssh ${ssh_conn_str} "groups ${ignite_user}" | cut -d: -f2)"
+         if [ $(ssh ${ssh_conn_str} "${sudo_str} chage -l ${ignite_user}" | grep -c "never") -eq 3 ]; then
+            ignite_user_chage="OK"
+         else
+            ignite_user_chage="Необходимо сменить пароль!"
+         fi 
+         if [ $(ssh ${ssh_conn_str} "${sudo_str} sudo -l" | grep -c "\(ALL\)" ) -ge 30 ]; then
+             ignite_user_sudo="OK"
+         else
+             ignite_user_sudo="FAIL! Необходимо проверить на соответствие новому чек-листу"
+         fi
+         echo -e  "\n# Пользователь ${ignite_user}: chage - ${ignite_user_chage}, sudo - ${ignite_user_sudo}, UID=${ignite_user_uid}, GID=${ignite_user_gid}, входит в группы:${ignite_user_groups}"
+    else
+         echo -e "\n# ВНИМАНИЕ! Пользователя ${ignite_user} не существует!"
+    fi
 
      # Проверка юнита ignite-server ( что pid ищется по правильному пути )
-     if [ $(ssh ${ssh_conn_str} "grep '${path_to_ignite_pid}' /etc/systemd/system/${systemd_ignite_service} | wc -l" ) -ne 1 ]; then
-        echo -e "\n# Внимание! Некорректный юнит ${systemd_ignite_service}! Не использовать запуск череез systemctl без правки юнита!"
+     if [ -n "${systemd_ignite_service}" ]; then
+         unit_full_path="/etc/systemd/system/${systemd_ignite_service}"
+         if [ $(ssh ${ssh_conn_str} "if [ -e ${unit_full_path} ]; then cat ${unit_full_path}; fi" |  grep -c "${path_to_ignite_pid}" ) -ne 1 ]; then
+            echo -e "\n# Внимание! Некорректный юнит ${systemd_ignite_service}! Не использовать запуск через systemctl без правки юнита!"
+         fi
      fi
 
      print_line '=' 80
